@@ -190,7 +190,7 @@ elif st.session_state["page"] == "student_details":
             st.session_state["page"] = "login"
             st.rerun()
 
-# ------------------ PAGE 3: SEMESTER MARKS ENTRY (CLEAN VERSION - NO EMOJIS, NO GRADE PREVIEW) ------------------
+# ------------------ PAGE 3: SEMESTER MARKS ENTRY ------------------
 elif st.session_state["page"] == "semester_entry":
     name = st.session_state["student_details"]["name"]
     gr = st.session_state["student_details"]["gr"]
@@ -673,12 +673,20 @@ elif st.session_state["page"] == "semester_entry":
             else:
                 st.error("Please save at least one semester's marks first!")
 
-# ------------------ PAGE 4: ANALYSIS (FIXED - KT PENDING SGPA=0, KT CLEARED INCLUDED IN SGPA) ------------------
+# ------------------ PAGE 4: ANALYSIS (WITH KT ATTEMPTS COLUMN - FIXED) ------------------
 elif st.session_state["page"] == "analysis":
     st.title("Student Performance Analysis")
     
     # Force refresh data from database to get latest marks
     gr = st.session_state["logged_in_gr"]
+    
+    # Function to get KT attempts for a subject
+    def get_kt_attempts(subject_code):
+        kt_list = st.session_state.get("kt_subjects", [])
+        for kt in kt_list:
+            if kt.get("subject_code") == subject_code:
+                return kt.get("attempts", 0)
+        return 0
     
     # Refresh student submissions from database
     all_marks = db.get_all_student_marks(gr)
@@ -737,13 +745,21 @@ elif st.session_state["page"] == "analysis":
             axis=1
         )
         
-        # Subject-wise report
+        # Add KT Attempts column - ALWAYS show attempts from KT table
+        def get_kt_attempts_display(row):
+            subject_code = row.get("Subject Code", "")
+            attempts = get_kt_attempts(subject_code)
+            return str(attempts) if attempts > 0 else "-"
+        
+        df["KT Attempts"] = df.apply(lambda row: get_kt_attempts_display(row), axis=1)
+        
+        # Subject-wise report with KT Attempts column
         st.subheader("Subject-wise Detailed Report")
-        display_cols = ["Semester", "Subject Type", "Subject", "Marks", "Percentage", "Grade", "Credits", "Grade Point", "Credit Points", "Final Result"]
+        display_cols = ["Semester", "Subject Type", "Subject", "Marks", "Percentage", "Grade", "Credits", "Grade Point", "Credit Points", "Final Result", "KT Attempts"]
         available_display_cols = [col for col in display_cols if col in df.columns]
         st.dataframe(df[available_display_cols], use_container_width=True)
 
-              # Semester-wise summary
+        # Semester-wise summary
         st.subheader("Semester-wise Summary")
         sem_summary = []
         
@@ -783,7 +799,6 @@ elif st.session_state["page"] == "analysis":
                 status_msg = "Not Cleared"
                 passed_credits = sem_df[sem_df["Final Result"] == "Pass"]["Credits"].sum()
                 credit_points = 0
-                # DO NOT add to CGPA
             else:
                 # Semester with no failed subjects = normal SGPA calculation
                 if total_credits > 0:
@@ -878,7 +893,8 @@ elif st.session_state["page"] == "analysis":
                 st.error(f"FAILED SUBJECTS - {len(failed_subjects_df)} Subject(s) to Clear")
                 st.warning("**Subjects to Clear:**")
                 for idx, row in failed_subjects_df.iterrows():
-                    st.write(f"• {row['Subject']} (Semester {row['Semester']})")
+                    attempts = get_kt_attempts(row.get("Subject Code", ""))
+                    st.write(f"• {row['Subject']} (Semester {row['Semester']}) - Attempts: {attempts}")
                 st.info("**Note:** Semesters with failed subjects have SGPA = 0 and are NOT included in CGPA calculation.")
             else:
                 if overall_cgpa >= 8.5:
@@ -1058,9 +1074,10 @@ elif st.session_state["page"] == "analysis":
                     with col2:
                         if st.button("Clear KT", key=f"clear_kt_{idx}"):
                             if reexam_marks >= passing_marks:
-                                # Mark KT as cleared
+                                # Mark KT as cleared but KEEP the attempts count
                                 kt["cleared"] = True
                                 kt["status"] = "Cleared"
+                                # DO NOT reset attempts - keep the value
                                 
                                 # Create new entry for the subject with passed marks
                                 kt_subject = {
@@ -1098,7 +1115,7 @@ elif st.session_state["page"] == "analysis":
                                 db.save_semester_marks(gr, kt["original_semester"], st.session_state["student_submissions"][kt["original_semester"]])
                                 db.save_all_kt_subjects(gr, st.session_state["kt_subjects"])
                                 
-                                st.success(f"{kt['subject_name']} cleared successfully! This semester's SGPA will now be recalculated and included in CGPA.")
+                                st.success(f"{kt['subject_name']} cleared successfully after {kt['attempts']} attempt(s)!")
                                 st.rerun()
                             else:
                                 st.error(f"Cannot clear: {reexam_marks}/{max_marks} marks (Need {passing_marks} marks to pass)")
@@ -1113,7 +1130,7 @@ elif st.session_state["page"] == "analysis":
         download_df["Marks Obtained"] = download_df["Marks"]
         
         csv_columns = ["Semester", "Subject", "Subject Code", "Marks Obtained", "Percentage", 
-                      "Grade", "Credits", "Grade Point", "Final Result"]
+                      "Grade", "Credits", "Grade Point", "Final Result", "KT Attempts"]
         available_csv_cols = [col for col in csv_columns if col in download_df.columns]
         
         csv_data = download_df[available_csv_cols].sort_values("Semester").to_csv(index=False)
