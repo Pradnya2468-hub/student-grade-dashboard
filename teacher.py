@@ -123,14 +123,19 @@ def calculate_student_grades(student_gr):
     sem_data = []
     total_passed_credits = 0
     total_credit_points = 0
+    has_any_failed = False
     
     semesters = sorted(df["Semester"].unique())
     
     for sem in semesters:
         sem_df = df[df["Semester"] == sem]
         passed_df = sem_df[sem_df.get("Final Result") == "Pass"]
+        failed_df = sem_df[sem_df.get("Final Result") == "Fail"]
         
-        if not passed_df.empty:
+        # Check if this semester has any failed subject
+        has_failed_in_sem = len(failed_df) > 0
+        
+        if not has_failed_in_sem and len(passed_df) > 0:
             credits = passed_df["Credits"].sum()
             credit_points = passed_df["Credit Points"].sum()
             sgpa = round(credit_points / credits, 2) if credits > 0 else 0
@@ -138,9 +143,11 @@ def calculate_student_grades(student_gr):
             total_passed_credits += credits
             total_credit_points += credit_points
         else:
-            credits = 0
+            credits = passed_df["Credits"].sum()
             credit_points = 0
             sgpa = 0
+            if has_failed_in_sem:
+                has_any_failed = True
         
         sem_data.append({
             "semester": sem,
@@ -149,7 +156,7 @@ def calculate_student_grades(student_gr):
             "sgpa": sgpa,
             "total_subjects": len(sem_df),
             "passed_subjects": len(passed_df),
-            "failed_subjects": len(sem_df) - len(passed_df)
+            "failed_subjects": len(failed_df)
         })
     
     cgpa = round(total_credit_points / total_passed_credits, 2) if total_passed_credits > 0 else 0
@@ -159,7 +166,8 @@ def calculate_student_grades(student_gr):
         "total_passed_credits": total_passed_credits,
         "total_credit_points": total_credit_points,
         "cgpa": cgpa,
-        "df": df
+        "df": df,
+        "has_any_failed": has_any_failed
     }
 
 def generate_batch_years():
@@ -462,7 +470,7 @@ elif st.session_state["page"] == "subject_config":
                                     db.delete_batch_subject(batch, dept, semester, subj['subject_code'])
                                     st.rerun()
 
-# ------------------ TEACHER ANALYSIS ------------------
+# ------------------ TEACHER ANALYSIS (FIXED VERSION) ------------------
 elif st.session_state["page"] == "teacher_analysis":
     st.title("Student Performance Analysis")
     
@@ -509,6 +517,10 @@ elif st.session_state["page"] == "teacher_analysis":
                         student_total_subjects += sem['total_subjects']
                 total_subjects_dept += student_total_subjects
                 
+                # Determine if student is FAIL (has any failed subject OR CGPA < 4)
+                has_failed_subject = grades.get('has_any_failed', False)
+                is_fail = (grades['cgpa'] < 4.0) or has_failed_subject
+                
                 student_performance.append({
                     "name": student['name'],
                     "gr": student['gr_number'],
@@ -519,6 +531,8 @@ elif st.session_state["page"] == "teacher_analysis":
                     "total_credit_points": grades['total_credit_points'],
                     "total_subjects": student_total_subjects,
                     "has_data": True,
+                    "is_fail": is_fail,
+                    "has_failed_subject": has_failed_subject,
                     "sem_data": grades['sem_data']
                 })
             else:
@@ -532,9 +546,12 @@ elif st.session_state["page"] == "teacher_analysis":
                     "total_credit_points": 0,
                     "total_subjects": 0,
                     "has_data": False,
+                    "is_fail": False,
+                    "has_failed_subject": False,
                     "sem_data": []
                 })
         
+        # Separate students with data
         students_with_data = [s for s in student_performance if s['has_data']]
         students_with_data.sort(key=lambda x: x['cgpa'], reverse=True)
         
@@ -558,6 +575,10 @@ elif st.session_state["page"] == "teacher_analysis":
         
         total_students = len(student_performance)
         
+        # Count actual failing students (based on is_fail flag)
+        fail_students = [s for s in students_with_data if s.get('is_fail', False)]
+        pass_students = [s for s in students_with_data if not s.get('is_fail', False)]
+        
         col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("Total Students", total_students)
@@ -567,9 +588,6 @@ elif st.session_state["page"] == "teacher_analysis":
             st.metric("Total Subjects", total_subjects_dept)
         
         if students_with_data:
-            pass_students = [s for s in students_with_data if s['cgpa'] >= 4.0]
-            fail_students = [s for s in students_with_data if s['cgpa'] < 4.0]
-            
             pass_rate = (len(pass_students)/len(students_with_data))*100 if students_with_data else 0
             avg_cgpa = sum(s['cgpa'] for s in students_with_data)/len(students_with_data)
             
@@ -593,6 +611,12 @@ elif st.session_state["page"] == "teacher_analysis":
                                    title=f"CGPA Distribution - {analysis_dept}",
                                    labels={'value': 'CGPA', 'count': 'Number of Students'})
             st.plotly_chart(fig_hist, use_container_width=True)
+            
+            # Show failing students list for debugging
+            if fail_students:
+                with st.expander("⚠️ Students with Failures (Click to see list)"):
+                    for fs in fail_students:
+                        st.write(f"- **{fs['name']}** ({fs['gr']}) - CGPA: {fs['cgpa']:.2f}, Has Failed Subject: {fs['has_failed_subject']}")
         else:
             with col4:
                 st.metric("Pass Rate", "0%")
@@ -608,9 +632,9 @@ elif st.session_state["page"] == "teacher_analysis":
         filter_option = st.radio("Filter Students", ["All", "Pass", "Fail", "No Data"], horizontal=True)
         
         if filter_option == "Pass":
-            filtered = [s for s in student_performance if s['has_data'] and s['cgpa'] >= 4.0]
+            filtered = [s for s in student_performance if s['has_data'] and not s.get('is_fail', False)]
         elif filter_option == "Fail":
-            filtered = [s for s in student_performance if s['has_data'] and s['cgpa'] < 4.0]
+            filtered = [s for s in student_performance if s['has_data'] and s.get('is_fail', False)]
         elif filter_option == "No Data":
             filtered = [s for s in student_performance if not s['has_data']]
         else:
@@ -622,7 +646,18 @@ elif st.session_state["page"] == "teacher_analysis":
         
         if filtered:
             for student in filtered:
-                with st.expander(f"{student['name']} ({student['gr']}) - CGPA: {student['cgpa']:.2f}"):
+                # Determine student status for display
+                if not student['has_data']:
+                    status_text = "⚠️ No Data"
+                    status_color = "orange"
+                elif student.get('is_fail', False):
+                    status_text = "❌ Fail"
+                    status_color = "red"
+                else:
+                    status_text = "✅ Pass"
+                    status_color = "green"
+                
+                with st.expander(f"{student['name']} ({student['gr']}) - CGPA: {student['cgpa']:.2f} - {status_text}"):
                     if student['has_data']:
                         col1, col2, col3 = st.columns(3)
                         with col1:
@@ -633,6 +668,8 @@ elif st.session_state["page"] == "teacher_analysis":
                             st.write(f"**Total Subjects:** {student['total_subjects']}")
                         with col3:
                             st.write(f"**Credit Points:** {student['total_credit_points']:.2f}")
+                            if student.get('has_failed_subject', False):
+                                st.error("⚠️ Has Failed Subject(s)")
                         
                         col1, col2 = st.columns([3,1])
                         with col2:
